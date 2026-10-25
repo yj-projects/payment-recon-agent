@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Payment reconciliation · Synthetic demo</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,sans-serif;color:#172f35;background:#f3f6f5;color-scheme:light}
+    *{box-sizing:border-box}body{margin:0}main{max-width:1120px;margin:auto;padding:36px 24px 60px}
+    header{display:flex;justify-content:space-between;gap:20px;align-items:start}h1{font-size:clamp(1.7rem,4vw,2.5rem);margin:12px 0}
+    h2{font-size:1.2rem;margin:0 0 16px}p{line-height:1.6}.muted{color:#50666b}.eyebrow{font-size:.75rem;font-weight:750;letter-spacing:.12em;text-transform:uppercase;color:#246b60}
+    a{color:#176558}button,input,select{font:inherit}button{cursor:pointer;border:1px solid #afc8c1;background:#f4faf8;color:#164f43;border-radius:6px;padding:8px 12px}
+    button:hover{background:#dfefe9}button:focus-visible,a:focus-visible,select:focus-visible{outline:3px solid #c08a30;outline-offset:3px}
+    .badge{display:inline-block;background:#deece7;color:#205d50;padding:6px 10px;border-radius:20px;font-size:.8rem;font-weight:650}
+    .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:28px 0}.card,section{background:white;border:1px solid #d7e1de;border-radius:10px;padding:22px}
+    .number{font-size:2.3rem;font-weight:700;margin-top:8px;font-variant-numeric:tabular-nums}.card span{font-size:.88rem;color:#50666b}
+    .layout{display:grid;grid-template-columns:1.3fr 1fr;gap:20px;align-items:start}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.88rem}
+    th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e3eae7;padding:12px 8px}th{font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;color:#50666b}
+    td:first-child{white-space:nowrap}.status{font-size:.72rem;font-weight:700;color:#8b4d19;min-width:120px}.reason{min-width:180px;line-height:1.5}
+    .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:18px}select{min-width:110px;padding:8px;border:1px solid #afc8c1;border-radius:6px;background:white}
+    .difference{font-size:1.7rem;font-weight:700;margin:12px 0;color:#8b4d19}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.78rem;background:#f3f6f5;padding:16px;border-radius:6px;line-height:1.6}
+    .bank{margin-top:20px}.error{color:#8c2424;background:#fff0ed;padding:12px;border-radius:6px}.footnote{font-size:.8rem;margin-top:24px}#connection{font-size:.8rem}
+    .agent{margin-top:20px}.agent form{display:flex;gap:10px;margin:18px 0}.agent input{flex:1;min-width:0;border:1px solid #afc8c1;border-radius:6px;padding:10px}.agent-answer{white-space:pre-wrap;line-height:1.6}.agent button:disabled{cursor:wait;opacity:.65}
+    @media(max-width:850px){.layout{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:480px){main{padding:24px 14px}header{display:block}.card,section{padding:16px}.stats{gap:8px}.number{font-size:2rem}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><div class="eyebrow">Settlement controls / local demonstration</div><h1>Payment reconciliation</h1>
+      <p class="muted">Check expected payouts against bank deposits. Inspect every exception and its matching evidence.</p>
+      <span class="badge">Synthetic demonstration data · Deterministic rules</span></div>
+    <a href="/docs">API documentation ↗</a>
+  </header>
+  <p id="connection" class="muted" role="status">Loading authoritative API snapshot…</p>
+  <p id="error" class="error" role="alert" hidden></p>
+  <div class="stats" aria-label="Batch summary">
+    <div class="card"><span>Total payouts</span><div class="number" id="total">—</div></div>
+    <div class="card"><span>Matched payouts</span><div class="number" id="matched">—</div></div>
+    <div class="card"><span>Payout exceptions</span><div class="number" id="exceptions-count">—</div></div>
+    <div class="card"><span>Unmatched bank transactions</span><div class="number" id="unmatched-count">—</div></div>
+  </div>
+  <div class="layout">
+    <section><h2>Payout exceptions</h2><p class="muted">Select a payout to inspect its source transactions and the rule that determined its status.</p>
+      <div class="table-wrap"><table><thead><tr><th>Payout</th><th>Status</th><th>Reason</th></tr></thead><tbody id="exceptions"></tbody></table></div>
+    </section>
+    <section aria-labelledby="inspector-title"><h2 id="inspector-title">Inspect a payout</h2>
+      <form class="controls" id="inspect-form"><label for="payout-select">Payout</label><select id="payout-select" disabled></select><button id="inspect-button" disabled>Inspect evidence</button></form>
+      <div id="detail" aria-live="polite"><p class="muted">Choose a payout after the snapshot loads.</p></div>
+    </section>
+  </div>
+  <section class="bank"><h2>Unmatched bank transactions</h2><p class="muted">Bank rows with no ledger association. These are reported separately from payout exceptions.</p>
+    <div class="table-wrap"><table><thead><tr><th>Bank transaction</th><th>Merchant</th><th>Amount</th><th>Posted</th><th>Reference</th></tr></thead><tbody id="bank"></tbody></table></div>
+  </section>
+  <section class="agent" aria-labelledby="agent-title"><h2 id="agent-title">Ask the Agent</h2>
+    <p class="muted">Ask about the summary, payout exceptions, or one payout. Without an API key, a deterministic question router supplies template explanations. Read-only tools provide every financial fact.</p>
+    <form id="agent-form"><label class="muted" for="question">Question</label><input id="question" required maxlength="1000" placeholder="Why did P-003 fail to reconcile?"><button id="ask-button">Ask</button></form>
+    <p id="agent-state" role="status" class="muted">Ready · Mode is shown with each response.</p>
+    <p id="agent-mode" class="badge" hidden></p><p id="agent-error" class="error" role="alert" hidden></p>
+    <p id="agent-answer" class="agent-answer" aria-live="polite"></p><p id="agent-tools" class="muted"></p>
+    <details id="agent-evidence-panel" hidden><summary>Authoritative supporting evidence · independent of the narrative</summary><pre id="agent-evidence"></pre></details>
+  </section>
+  <p class="footnote muted">Read-only, synthetic data. No payments or automatic resolution. Model narratives can be wrong; inspect the authoritative supporting evidence. Reloading this page reads the same startup snapshot; restart the server to reload fixtures.</p>
+</main>
+<script>
+'use strict';
+const byId = id => document.getElementById(id);
+const node = (tag, text, className) => {
+  const element = document.createElement(tag);
+  if (text !== undefined) element.textContent = text;
+  if (className) element.className = className;
+  return element;
+};
+// Convert only safe integer minor units; BigInt keeps formatting exact, with no float division.
+function money(cents, currency) {
+  if (!Number.isSafeInteger(cents)) return 'Amount exceeds browser precision; inspect integer source data';
+  const value = BigInt(cents), absolute = value < 0n ? -value : value;
+  const units = (absolute / 100n).toLocaleString('en-US');
+  const fraction = (absolute % 100n).toString().padStart(2, '0');
+  const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency + ' ';
+  return (value < 0n ? '-' : '') + symbol + units + '.' + fraction;
+}
+async function api(path) {
+  const response = await fetch(path, {cache:'no-store'});
+  if (!response.ok) throw new Error('API request failed (' + response.status + ').');
+  const raw = await response.text();
+  return {body:JSON.parse(raw), raw, requestId:response.headers.get('X-Request-ID')};
+}
+let inspectionSequence = 0;
+async function inspect(payoutId) {
+  const sequence = ++inspectionSequence;
+  byId('payout-select').value = payoutId;
+  byId('detail').replaceChildren(node('p', 'Loading evidence…', 'muted'));
+  try {
+    const {body:result, raw} = await api('/payouts/' + encodeURIComponent(payoutId));
+    if (sequence !== inspectionSequence) return;
+    const detail = byId('detail');
+    detail.replaceChildren(node('h3', result.payout.payout_id + ' · ' + result.status), node('p', result.reason));
+    const difference = result.evidence.amount_difference_cents;
+    if (difference !== null) {
+      detail.append(node('div', money(difference, result.payout.currency), 'difference'), node('p', 'Bank minus expected · ' + result.payout.currency, 'muted'));
+    }
+    detail.append(node('p', 'Expected: ' + money(result.payout.expected_amount_cents, result.payout.currency) + ' · ' + result.payout.expected_date));
+    for (const bank of result.candidates) {
+      detail.append(node('p', bank.bank_txn_id + ': ' + money(bank.actual_amount_cents, bank.currency) + ' · ' + bank.posted_date));
+    }
+    if (!result.candidates.length) detail.append(node('p', 'No bank candidates.'));
+    const evidence = node('details');
+    // Keep the original JSON so large source integers are never rounded in this panel.
+    evidence.append(node('summary', 'Structured evidence and source records'), node('pre', raw));
+    detail.append(evidence);
+  } catch (error) {
+    if (sequence === inspectionSequence) byId('detail').replaceChildren(node('p', error.message, 'error'));
+  }
+}
+byId('inspect-form').addEventListener('submit', event => {event.preventDefault(); inspect(byId('payout-select').value);});
+byId('agent-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const question = byId('question').value.trim();
+  if (!question) return;
+  byId('ask-button').disabled = true;
+  byId('agent-state').textContent = 'Investigating through registered read-only tools…';
+  byId('agent-answer').textContent = ''; byId('agent-tools').textContent = '';
+  byId('agent-error').hidden = true; byId('agent-mode').hidden = true; byId('agent-evidence-panel').hidden = true;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
+  try {
+    const response = await fetch('/agent/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question}), signal:controller.signal});
+    const raw = await response.text(), result = JSON.parse(raw);
+    if (!result.mode) throw new Error('The server rejected the question (' + response.status + ').');
+    byId('agent-mode').hidden = false;
+    byId('agent-mode').textContent = result.mode === 'demo-mode' ? 'Demo Mode · deterministic routing, no LLM' : 'Live LLM · model narrative, verify evidence';
+    byId('agent-answer').textContent = result.answer;
+    byId('agent-tools').textContent = 'Tools executed: ' + (result.executed_tools.length ? result.executed_tools.map(tool => tool.name + ' (' + tool.outcome + ')').join(', ') : 'none');
+    byId('agent-evidence-panel').hidden = false;
+    // Preserve exact integer values in the complete raw API result, including evidence.
+    byId('agent-evidence').textContent = raw;
+    byId('agent-state').textContent = 'Request ' + result.request_id;
+    if (!response.ok) {byId('agent-error').hidden = false; byId('agent-error').textContent = 'Investigation error: ' + result.error + '. Any completed tool evidence is retained.';}
+  } catch (error) {
+    byId('agent-error').hidden = false;
+    byId('agent-error').textContent = error.name === 'AbortError' ? 'The request timed out. Try again.' : error.message;
+    byId('agent-state').textContent = 'Investigation unavailable.';
+  } finally {
+    clearTimeout(timer); byId('ask-button').disabled = false;
+  }
+});
+async function load() {
+  try {
+    const [{body:batch, requestId}, {body:exceptions}] = await Promise.all([api('/reconcile'), api('/exceptions')]);
+    for (const [id, key] of [['total','total_payouts'], ['matched','matched'], ['exceptions-count','exceptions'], ['unmatched-count','unmatched_bank']]) {
+      byId(id).textContent = batch.summary[key];
+    }
+    for (const result of batch.results) {
+      const option = node('option', result.payout.payout_id);
+      option.value = result.payout.payout_id;
+      byId('payout-select').append(option);
+    }
+    for (const result of exceptions.payout_exceptions) {
+      const row = node('tr'), cell = node('td'), button = node('button', result.payout.payout_id);
+      button.type = 'button';
+      button.addEventListener('click', () => inspect(result.payout.payout_id));
+      cell.append(button);
+      row.append(cell, node('td', result.status.replaceAll('_', ' '), 'status'), node('td', result.reason, 'reason'));
+      byId('exceptions').append(row);
+    }
+    if (!exceptions.payout_exceptions.length) {
+      const row = node('tr'), cell = node('td', 'No payout exceptions.'); cell.colSpan = 3; row.append(cell); byId('exceptions').append(row);
+    }
+    for (const bank of exceptions.unmatched_bank) {
+      const row = node('tr');
+      for (const value of [bank.bank_txn_id, bank.merchant_id, money(bank.actual_amount_cents, bank.currency), bank.posted_date, bank.reference]) row.append(node('td', value));
+      byId('bank').append(row);
+    }
+    if (!exceptions.unmatched_bank.length) {
+      const row = node('tr'), cell = node('td', 'No unmatched bank transactions.'); cell.colSpan = 5; row.append(cell); byId('bank').append(row);
+    }
+    const available = batch.results.length > 0;
+    byId('payout-select').disabled = !available; byId('inspect-button').disabled = !available;
+    byId('connection').textContent = 'Snapshot loaded from the local API · Request ' + requestId;
+    const firstException = exceptions.payout_exceptions[0] || batch.results[0];
+    if (firstException) await inspect(firstException.payout.payout_id);
+  } catch (error) {
+    byId('error').hidden = false; byId('error').textContent = error.message + ' Check that the local server is running, then reload.';
+    byId('connection').textContent = 'Snapshot unavailable.';
+  }
+}
+load();
+</script>
+</body>
+</html>

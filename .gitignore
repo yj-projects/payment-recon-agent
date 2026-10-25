@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+.mypy_cache/
+.cache/
+*.egg-info/
+build/
+dist/
+
+# Secrets / local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+credentials*.json
+service-account*.json
+.aws/
+.ssh/
+
+# Local agent state, private notes, and internal working plans
+.codex/
+.agents/
+private/
+.private/
+docs/superpowers/
+
+# OS / editor
+.DS_Store
+._*
+.AppleDouble/
+.vscode/
+.idea/
+
+# Local outputs (keep input synthetic fixtures tracked)
+logs/
+*.log
+coverage.xml
+.coverage
+htmlcov/

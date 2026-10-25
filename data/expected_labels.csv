@@ -1,0 +1,13 @@
+payout_id,expected_status,expected_bank_txn_ids,expected_reason
+P-001,MATCHED,B-001,"Normalized reference, currency, amount and date match"
+P-002,MATCHED,B-002,Bank deposit posted exactly two calendar days later
+P-003,AMOUNT_MISMATCH,B-003,Actual 119950 cents vs expected 120000 cents; difference -50 cents
+P-004,MISSING_IN_BANK,,No bank candidate for merchant and reference
+P-005,DUPLICATE_CANDIDATES,B-005A;B-005B,Two bank candidates share the merchant and normalized reference
+P-006,DATE_OUT_OF_WINDOW,B-006,Deposit posted four calendar days after expected date
+P-007,CURRENCY_MISMATCH,B-007,Ledger USD but bank EUR
+P-008,MATCHED,B-008,"Reference, currency, amount and date match"
+P-009,MATCHED,B-009,Deposit posted two days later
+P-010,MATCHED,B-010,EUR payout matches
+P-011,MATCHED,B-011,USD payout matches
+P-012,MATCHED,B-012,Same-day payout matches
