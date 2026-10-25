@@ -11,6 +11,13 @@ constrained tool execution, evaluations, and observability**. There is no model
 training. All data is invented; this is a portfolio demonstration, not a
 production finance control or a payment execution system.
 
+## Demo Preview
+
+![Payment Reconciliation Dashboard](docs/images/dashboard.png)
+
+The dashboard demonstrates synthetic financial data, reconciliation exceptions,
+and supporting evidence.
+
 ## What is implemented and verified
 
 Implemented: strict CSV loading, pure reconciliation rules, read-only service
