@@ -30,10 +30,50 @@ implemented.
 | Area | Evidence | Verification boundary |
 |---|---|---|
 | Reconciliation | 12/12 golden statuses and candidate-ID sets; 7 matched, 5 payout exceptions, B-999 unmatched | Agreement with a small synthetic fixture, not real-world accuracy |
-| Automated suite | 126 passing tests on Python 3.12 | Rules, input validation, API contracts, tool controls, and failure paths |
+| Automated suite | 201 passing tests on Python 3.12 | Rules, API/tool controls, evaluation, saved-run pairing, and failure paths |
 | Local demo | Browser dashboard, demo agent, and required HTTP routes exercised | Manual browser/HTTP checks, not automated browser coverage |
 | LLM adapter | Actual OpenAI SDK with mocked HTTP responses | Tool dispatch, outputs, reasoning/history replay, limits, and errors |
 | Live provider | Adapter implemented | **No real OpenAI provider call has been tested**; account/model access and narrative quality are unverified |
+
+## Agent Evaluation
+
+[Milestone 5: Agent Evaluation](docs/AGENT_EVALUATION.md) adds 20 synthetic cases,
+evaluation-only tool traces, separate tool/argument/evidence/safety scores, and a
+human-review worksheet for explanation correctness. The deterministic demo run
+selects the expected tools in 19/20 cases; one summary paraphrase fails. These
+are application-routing results. Live-model results are **Not yet evaluated**.
+
+## Project Status and Roadmap
+
+| Milestone | Development completed | Verification boundary |
+|---|---|---|
+| 1 | Deterministic reconciliation engine and golden evaluation | 12/12 fixture status/candidate agreement |
+| 2 | FastAPI, typed responses, browser dashboard, observability | Local tests and demonstration |
+| 3 | Read-only Agent tools, demo routing, SDK integration | Provider exchanges verified with mocked responses; live access untested |
+| 4 | GitHub portfolio, architecture documentation, local demonstration | Repository published; no cloud deployment verified |
+| 5 | 20-case traced evaluation, runner, automated scoring, failure analysis, human-review worksheet, saved-run comparison | Demo baseline measured; narrative review Pending; live LLM Not yet evaluated |
+
+The framework quality review verified **181 passing tests** and **12/12 financial
+golden agreement**. With 20 new comparison tests, the current suite verifies
+**201 passing tests** and unchanged **12/12** golden agreement; details are in
+the [evaluation report](docs/AGENT_EVALUATION.md).
+Development of the framework is complete. Demo evaluation is complete with
+AE-013 preserved as a failure; live evaluation and human factuality review remain
+pending. Demo performance is not evidence of LLM reasoning or narrative accuracy.
+
+Remaining work, in priority order:
+
+- **P0:** After approval, run the controlled five-case live smoke test; verify
+  model access and function calling, then review all five generated answers for
+  factual correctness. AE-017 should be refused by the application without a
+  provider call.
+- **P1:** If the smoke test succeeds, run the full 20-case live evaluation,
+  complete human factuality review, and produce the measured paired comparison.
+  Record failures, limitations, configured model identity, latency, and provider
+  calls; publish only reviewed, verified results after approval.
+- **P2 — optional, not completed:** Docker packaging, GitHub Actions CI,
+  deployment with appropriate cost/access controls, and larger, more
+  representative evaluation datasets.
 
 ## Architecture
 
@@ -376,9 +416,9 @@ Separately scoped work could add an approved paid-provider smoke test, more
 independent edge-case fixtures, narrative-grounding evaluation, a dependency
 lock and TestClient warning cleanup, and minimal CI. Deployment hardening would
 require authentication, rate limits, operational controls, and a fresh review.
-None of that is claimed as completed. No Docker, CI, deployment, or publishing
-has been added for this release-preparation milestone.
+None of that is claimed as completed. No Docker, CI, or deployment
+has been added for this evaluation milestone.
 
 Read the [release safety and repository-boundary review](docs/RELEASE_REVIEW.md)
-before publication. No child repository initialization, commits, GitHub creation,
-push, or deployment has been performed.
+before publishing further changes. This baseline release contains deterministic
+evaluation only; live LLM evaluation and human factuality review remain pending.

@@ -46,3 +46,6 @@ logs/
 coverage.xml
 .coverage
 htmlcov/
+
+# Agent evaluation raw traces, responses, and human-review worksheets
+/evals/results/
