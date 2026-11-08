@@ -1,0 +1,16 @@
+# Allow only the build metadata, application, and synthetic runtime assets.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!app/
+!app/**
+!static/
+!static/index.html
+!data/
+!data/ledger.csv
+!data/bank.csv
+
+# Do not send generated Python files inside the application directory.
+**/__pycache__/
+**/*.py[cod]

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  OPENAI_API_KEY: ""
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    name: Tests and golden evaluation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install project and test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Run pytest
+        run: python -m pytest -q
+      - name: Run reconciliation golden evaluation
+        run: python scripts/evaluate.py
+      # Agent evaluation is intentionally outside this gate: documented AE-013
+      # fails with exit 1. See README.md for the distinction from golden evaluation.
+
+  docker-smoke:
+    name: Docker build and smoke tests
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build Docker image
+        run: docker build --platform linux/amd64 -t payment-recon-agent:ci .
+      - name: Start container without credentials
+        id: start
+        run: >-
+          docker run --detach --name recon-ci --platform linux/amd64
+          --publish 127.0.0.1:8000:8000 payment-recon-agent:ci
+      - name: Check health, API docs, and exceptions
+        run: |
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 --max-time 3 http://127.0.0.1:8000/health
+          curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/docs > /dev/null
+          curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/exceptions
+      - name: Show container logs
+        if: ${{ always() && steps.start.outcome == 'success' }}
+        run: docker logs recon-ci
+      - name: Remove smoke-test container
+        if: ${{ always() && steps.start.outcome == 'success' }}
+        run: docker rm --force recon-ci
