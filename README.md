@@ -71,8 +71,8 @@ Remaining work, in priority order:
   complete human factuality review, and produce the measured paired comparison.
   Record failures, limitations, configured model identity, latency, and provider
   calls; publish only reviewed, verified results after approval.
-- Docker packaging is locally verified. GitHub Actions CI is configured below;
-  its first GitHub-hosted run remains to be verified.
+- Docker packaging and GitHub-hosted CI are verified, including the failure
+  gate described below.
 - **P2 — optional, not completed:** Deployment with appropriate cost/access
   controls and larger, more representative evaluation datasets.
 
@@ -152,6 +152,15 @@ before merge is a separate repository ruleset/branch-protection setting.
 This pipeline fixes the runner release, Python minor version, and action
 commits. Existing dependency ranges and the Docker base tag remain unlocked;
 future runs are not guaranteed to resolve identical package/image versions.
+
+Hosted verification on [PR #1](https://github.com/yj-projects/payment-recon-agent/pull/1):
+the [initial successful run](https://github.com/yj-projects/payment-recon-agent/actions/runs/42438130177)
+confirmed 201 tests, 12/12 golden agreement, Docker build, and HTTP 200 from
+all three smoke endpoints on GitHub-hosted Ubuntu 24.04 with Python 3.12.
+The [intentional failure run](https://github.com/yj-projects/payment-recon-agent/actions/runs/42438317389)
+reported 1 deliberate failure and 201 passes: `validate` failed,
+`docker-smoke` was skipped, and the workflow failed. The temporary failing
+test was then removed; no application or agent behavior changed.
 
 ## Install and verify locally
 
@@ -455,8 +464,8 @@ Separately scoped work could add an approved paid-provider smoke test, more
 independent edge-case fixtures, narrative-grounding evaluation, a dependency
 lock and TestClient warning cleanup. Deployment hardening would
 require authentication, rate limits, operational controls, and a fresh review.
-Docker packaging and CI configuration are described above; deployment has
-not been implemented. GitHub-hosted CI verification remains pending.
+Docker packaging and hosted CI verification are described above; deployment
+has not been implemented.
 
 Read the [release safety and repository-boundary review](docs/RELEASE_REVIEW.md)
 before publishing further changes. This baseline release contains deterministic
