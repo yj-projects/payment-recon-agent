@@ -71,9 +71,10 @@ Remaining work, in priority order:
   complete human factuality review, and produce the measured paired comparison.
   Record failures, limitations, configured model identity, latency, and provider
   calls; publish only reviewed, verified results after approval.
-- **P2 — optional, not completed:** Docker packaging, GitHub Actions CI,
-  deployment with appropriate cost/access controls, and larger, more
-  representative evaluation datasets.
+- Docker packaging and GitHub-hosted CI are verified, including the failure
+  gate described below.
+- **P2 — optional, not completed:** Deployment with appropriate cost/access
+  controls and larger, more representative evaluation datasets.
 
 ## Architecture
 
@@ -113,6 +114,53 @@ flowchart TD
 The application modules never read `expected_labels.csv`. Golden reasons are
 human annotations; statuses and candidate sets are compared exactly, while tests
 verify important explanation facts rather than requiring identical prose.
+
+## Continuous integration
+
+[CI workflow](.github/workflows/ci.yml) runs on pull requests and pushes to
+`main`. Both jobs use GitHub-hosted Ubuntu 24.04 runners. The `validate` job
+sets up Python 3.12, installs `.[dev]` from `pyproject.toml`, runs the existing
+pytest suite, then runs `scripts/evaluate.py` for reconciliation golden
+agreement. The `docker-smoke` job has `needs: validate`: if installation,
+tests, or golden evaluation fails, Docker build and smoke tests are skipped.
+It builds the existing Dockerfile for Linux AMD64, starts a container without
+credentials, waits for `/health`, and requires successful HTTP responses from
+`/docs` and `/exceptions`. Container logs and cleanup run even after smoke-test
+failure; they do not change the failed result.
+
+Permissions are limited to `contents: read`; checkout does not persist Git
+credentials. Official actions are pinned to release commit SHAs. No user
+secrets, image publishing, or cloud deployment are used. Test/evaluation
+outputs stay on the temporary runner and are not uploaded or committed.
+
+**Known limitation:** `scripts/evaluate_agent.py --mode demo` is outside the
+mandatory CI gate. It currently exits 1 for documented case **AE-013**, with
+19/20 tool-selection agreement. This is separate from the passing 12/12
+reconciliation golden evaluation. The agent baseline is unchanged; there is
+no `continue-on-error` or failure suppression. A separate agent baseline
+regression check can be added in a later milestone.
+
+To verify on GitHub, commit the approved changes (including the Docker files),
+push a feature branch, and open a pull request targeting `main`. In the PR's
+Checks tab or the repository's Actions tab, select **CI** and inspect both job
+logs. A green local run does not verify GitHub event handling, permissions, or
+the hosted runner. To demonstrate the failure gate, use a disposable branch
+with an intentionally failing test: `validate` must fail and `docker-smoke`
+must be skipped. Remove that test before merging. Requiring these checks
+before merge is a separate repository ruleset/branch-protection setting.
+
+This pipeline fixes the runner release, Python minor version, and action
+commits. Existing dependency ranges and the Docker base tag remain unlocked;
+future runs are not guaranteed to resolve identical package/image versions.
+
+Hosted verification on [PR #1](https://github.com/yj-projects/payment-recon-agent/pull/1):
+the [initial successful run](https://github.com/yj-projects/payment-recon-agent/actions/runs/42438130177)
+confirmed 201 tests, 12/12 golden agreement, Docker build, and HTTP 200 from
+all three smoke endpoints on GitHub-hosted Ubuntu 24.04 with Python 3.12.
+The [intentional failure run](https://github.com/yj-projects/payment-recon-agent/actions/runs/42438317389)
+reported 1 deliberate failure and 201 passes: `validate` failed,
+`docker-smoke` was skipped, and the workflow failed. The temporary failing
+test was then removed; no application or agent behavior changed.
 
 ## Install and verify locally
 
@@ -414,10 +462,10 @@ cannot guarantee the absence of all sensitive material.
 
 Separately scoped work could add an approved paid-provider smoke test, more
 independent edge-case fixtures, narrative-grounding evaluation, a dependency
-lock and TestClient warning cleanup, and minimal CI. Deployment hardening would
+lock and TestClient warning cleanup. Deployment hardening would
 require authentication, rate limits, operational controls, and a fresh review.
-None of that is claimed as completed. No Docker, CI, or deployment
-has been added for this evaluation milestone.
+Docker packaging and hosted CI verification are described above; deployment
+has not been implemented.
 
 Read the [release safety and repository-boundary review](docs/RELEASE_REVIEW.md)
 before publishing further changes. This baseline release contains deterministic
