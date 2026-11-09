@@ -4,6 +4,26 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Controlled release operation
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+        required: true
+      confirmation:
+        description: Type DEPLOY SYNTHETIC DEMO or ROLLBACK SYNTHETIC DEMO
+        type: string
+        required: true
+      rollback_run_id:
+        description: Prior successful manual CI run containing the approved release receipt (rollback only)
+        type: string
+        default: ""
+      rollback_digest:
+        description: Exact sha256 digest from that receipt (rollback only)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -21,6 +41,34 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      - name: Reject unauthorized manual release requests
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          DEPLOY_ENABLED: ${{ vars.AZURE_DEPLOYMENT_ENABLED }}
+          OPERATION: ${{ inputs.operation }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          ROLLBACK_RUN_ID: ${{ inputs.rollback_run_id }}
+          ROLLBACK_DIGEST: ${{ inputs.rollback_digest }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main || "$DEPLOY_ENABLED" != true ]]; then
+            echo 'Manual releases require main and AZURE_DEPLOYMENT_ENABLED=true.' >&2
+            exit 1
+          fi
+          case "$OPERATION" in
+            deploy) expected='DEPLOY SYNTHETIC DEMO' ;;
+            rollback)
+              expected='ROLLBACK SYNTHETIC DEMO'
+              if ! [[ "$ROLLBACK_RUN_ID" =~ ^[0-9]+$ ]] || ! [[ "$ROLLBACK_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo 'Rollback requires a numeric source run and an exact sha256 digest.' >&2
+                exit 1
+              fi
+              ;;
+            *) exit 1 ;;
+          esac
+          if [[ "$CONFIRMATION" != "$expected" ]]; then
+            echo 'Explicit release confirmation did not match.' >&2
+            exit 1
+          fi
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,6 +91,8 @@ jobs:
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    outputs:
+      image_id: ${{ steps.export.outputs.image_id }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,9 +110,126 @@ jobs:
           curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 --max-time 3 http://127.0.0.1:8000/health
           curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/docs > /dev/null
           curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/exceptions
+      - name: Export the smoke-tested image
+        id: export
+        if: github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'
+        run: |
+          docker save --output "$RUNNER_TEMP/recon-image.tar" payment-recon-agent:ci
+          echo "image_id=$(docker image inspect payment-recon-agent:ci --format '{{.Id}}')" >> "$GITHUB_OUTPUT"
+      - name: Transfer the verified image to the release job
+        if: github.event_name == 'workflow_dispatch' && inputs.operation == 'deploy'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/recon-image.tar
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
       - name: Show container logs
         if: ${{ always() && steps.start.outcome == 'success' }}
         run: docker logs recon-ci
       - name: Remove smoke-test container
         if: ${{ always() && steps.start.outcome == 'success' }}
         run: docker rm --force recon-ci
+
+  deploy:
+    name: Controlled Azure release
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: [validate, docker-smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    concurrency:
+      group: azure-demo-deployment
+      cancel-in-progress: false
+    env:
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP || 'rg-payment-recon-demo' }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION || 'eastus' }}
+      AZURE_CONTAINERAPPS_ENVIRONMENT: ${{ vars.AZURE_CONTAINERAPPS_ENVIRONMENT || 'cae-payment-recon-demo' }}
+      AZURE_LOG_ANALYTICS_WORKSPACE: ${{ vars.AZURE_LOG_ANALYTICS_WORKSPACE || 'law-payment-recon-demo' }}
+      AZURE_APP_NAME: ${{ vars.AZURE_APP_NAME || 'ca-payment-recon-demo' }}
+      AZURE_PULL_IDENTITY_NAME: id-recon-pull
+      AZURE_CD_IDENTITY_NAME: id-recon-cd
+      AZURE_DEPLOYMENT_ENABLED: ${{ vars.AZURE_DEPLOYMENT_ENABLED }}
+      DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+      EXPECTED_IMAGE_ID: ${{ needs.docker-smoke.outputs.image_id }}
+      ROLLBACK_SOURCE_RUN_ID: ${{ inputs.rollback_run_id }}
+      ROLLBACK_DIGEST: ${{ inputs.rollback_digest }}
+    steps:
+      - name: Check out the selected main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Download the verified image
+        if: inputs.operation == 'deploy'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/verified-image
+      - name: Load the image without rebuilding
+        if: inputs.operation == 'deploy'
+        run: docker load --input "$RUNNER_TEMP/verified-image/recon-image.tar"
+      - name: Verify the rollback receipt's source run
+        if: inputs.operation == 'rollback'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          import json, os, re, subprocess
+          source = os.environ['ROLLBACK_SOURCE_RUN_ID']
+          if not re.fullmatch(r'[0-9]+', source):
+              raise SystemExit('Invalid source run ID')
+          repository = os.environ['GITHUB_REPOSITORY']
+          def get(run_id):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/actions/runs/{run_id}'], text=True))
+          prior, current = get(source), get(os.environ['GITHUB_RUN_ID'])
+          if not (prior['event'] == 'workflow_dispatch' and prior['head_branch'] == 'main'
+                  and prior['conclusion'] == 'success' and prior['workflow_id'] == current['workflow_id']
+                  and prior['repository']['full_name'] == repository):
+              raise SystemExit('Rollback receipt must come from a successful manual main run of this workflow')
+          commit = prior['head_sha']
+          if not re.fullmatch(r'[0-9a-f]{40}', commit):
+              raise SystemExit('Invalid source commit')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'ROLLBACK_SOURCE_COMMIT={commit}\n')
+          PY
+      - name: Download the approved rollback receipt
+        if: inputs.operation == 'rollback'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: azure-release-${{ inputs.rollback_run_id }}
+          path: prior-release
+          run-id: ${{ inputs.rollback_run_id }}
+          github-token: ${{ github.token }}
+      - name: Authenticate to Azure with OIDC
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Publish and deploy the tested image by digest
+        if: inputs.operation == 'deploy'
+        run: python scripts/azure_release.py deploy --expected-image-id "$EXPECTED_IMAGE_ID" --commit "$GITHUB_SHA"
+      - name: Roll back to the approved tested digest
+        if: inputs.operation == 'rollback'
+        run: python scripts/azure_release.py rollback --receipt prior-release/release-receipt.json --digest "$ROLLBACK_DIGEST"
+      - name: Retain the release receipt
+        if: ${{ always() && hashFiles('release-receipt.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: azure-release-${{ github.run_id }}
+          path: release-receipt.json
+          retention-days: 30
+          overwrite: true
+          if-no-files-found: error

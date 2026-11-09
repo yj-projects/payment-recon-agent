@@ -49,3 +49,8 @@ htmlcov/
 
 # Agent evaluation raw traces, responses, and human-review worksheets
 /evals/results/
+
+# Local Azure configuration and release receipts (parameters are not public docs)
+/deployment/*.env
+/deployment/*.local.json
+/release-receipt.json
