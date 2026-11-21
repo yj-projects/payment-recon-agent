@@ -275,8 +275,23 @@ gh variable set AZURE_DEPLOYMENT_ENABLED --repo "$GITHUB_REPOSITORY" --body true
 gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref main \
   -f operation=deploy -f confirmation='DEPLOY SYNTHETIC DEMO'
 gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml
-# Then: gh run watch <run-id> --repo "$GITHUB_REPOSITORY" --exit-status
-# After the attempt, even on failure, disable and verify the operational switch:
+```
+
+Identify that single run at the approved commit, then watch it. Do not dispatch
+again if a metadata read fails. A watch error alone does not prove the run ended:
+
+```bash
+RELEASE_RUN_ID='<run-id-from-the-dispatch>'
+gh run watch "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+gh run view "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json status,conclusion
+```
+
+Once the run is `completed`, execute this separate cleanup block whether it
+succeeded, failed, or was cancelled. If monitoring must be abandoned, restore the
+switch and report the run's last known state; disabling does not cancel an
+already-running workflow, stop Azure operations, or close public ingress:
+
+```bash
 gh variable set AZURE_DEPLOYMENT_ENABLED --repo "$GITHUB_REPOSITORY" --body false
 gh variable get AZURE_DEPLOYMENT_ENABLED --repo "$GITHUB_REPOSITORY"
 ```
