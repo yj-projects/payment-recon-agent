@@ -73,6 +73,10 @@ Remaining work, in priority order:
   calls; publish only reviewed, verified results after approval.
 - Docker packaging and GitHub-hosted CI are verified, including the failure
   gate described below.
+- Azure foundation and OIDC identities are provisioned. An ephemeral setup,
+  explicit teardown, and manually gated CD path are implemented; application
+  deployment and image publication have not been executed. See the
+  [Azure lifecycle guide](docs/AZURE_DEPLOYMENT.md).
 - **P2 — optional, not completed:** Deployment with appropriate cost/access
   controls and larger, more representative evaluation datasets.
 
@@ -128,10 +132,15 @@ credentials, waits for `/health`, and requires successful HTTP responses from
 `/docs` and `/exceptions`. Container logs and cleanup run even after smoke-test
 failure; they do not change the failed result.
 
-Permissions are limited to `contents: read`; checkout does not persist Git
-credentials. Official actions are pinned to release commit SHAs. No user
-secrets, image publishing, or cloud deployment are used. Test/evaluation
-outputs stay on the temporary runner and are not uploaded or committed.
+PR and main-push CI permissions are limited to `contents: read`; checkout does
+not persist Git credentials. Official actions are pinned to release commit
+SHAs. These CI runs use no user secrets, image publishing, or cloud deployment.
+Test/evaluation outputs stay on the temporary runner and are not committed.
+The same workflow also provides an explicitly enabled, manually dispatched
+main-only release path with its own job-scoped OIDC permission and the same
+required validation gates. Its tested-image transfer, release receipts,
+rollback, and disable/teardown procedures are documented in the
+[Azure lifecycle guide](docs/AZURE_DEPLOYMENT.md). No cloud release has run yet.
 
 **Known limitation:** `scripts/evaluate_agent.py --mode demo` is outside the
 mandatory CI gate. It currently exits 1 for documented case **AE-013**, with
@@ -464,8 +473,9 @@ Separately scoped work could add an approved paid-provider smoke test, more
 independent edge-case fixtures, narrative-grounding evaluation, a dependency
 lock and TestClient warning cleanup. Deployment hardening would
 require authentication, rate limits, operational controls, and a fresh review.
-Docker packaging and hosted CI verification are described above; deployment
-has not been implemented.
+Docker packaging, hosted CI, and the controlled Azure deployment tooling are
+described above. Actual application rollout and release/rollback verification
+remain pending explicit approval.
 
 Read the [release safety and repository-boundary review](docs/RELEASE_REVIEW.md)
 before publishing further changes. This baseline release contains deterministic
