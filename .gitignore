@@ -54,3 +54,4 @@ htmlcov/
 /deployment/*.env
 /deployment/*.local.json
 /release-receipt.json
+/release-progress.json
