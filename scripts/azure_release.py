@@ -5,16 +5,18 @@ This module never creates foundation resources. JSON manifests are valid YAML.
 No command in this module is executed at import time.
 """
 import argparse
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import tempfile
 import time
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 PROJECT = 'payment-recon-agent'
 LOCAL_IMAGE = PROJECT + ':ci'
@@ -26,13 +28,47 @@ class ReleaseError(RuntimeError):
     pass
 
 
+class ReleaseInterrupted(ReleaseError):
+    pass
+
+
 def require(condition, message):
     if not condition:
         raise ReleaseError(message)
 
 
+def progress(phase, **fields):
+    print(json.dumps({'event': 'release_progress', 'phase': phase, **fields}), flush=True)
+
+
+def write_evidence(path, value, *, exclusive=False):
+    """Atomically checkpoint complete JSON; never initialize over prior evidence."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(value, stream, indent=2)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            if exclusive:
+                try:
+                    os.link(temporary, path)
+                except FileExistsError:
+                    raise ReleaseError('evidence file already exists; preserve it before a new attempt') from None
+            else:
+                os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def run(args):
-    result = subprocess.run(args, text=True, capture_output=True, check=False)
+    timeout = 300 if args[:2] in (['docker', 'push'], ['docker', 'pull']) else 60
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ReleaseError(f'{args[0]} {args[1]} timed out; remote outcome may be unknown; do not retry the write') from None
     if result.returncode:
         # CLI output can contain account identifiers: keep it out of artifacts/logs.
         raise ReleaseError(f'{args[0]} {args[1]} failed (exit {result.returncode}); inspect authenticated CLI diagnostics')
@@ -158,7 +194,7 @@ def publish(cfg, commit, expected_image_id):
     repositories = cfg.az('acr', 'repository', 'list', '--name', cfg.acr)
     if PROJECT in repositories:
         tags = cfg.az('acr', 'repository', 'show-tags', '--name', cfg.acr, '--repository', PROJECT)
-        require(commit not in tags, 'commit tag already exists; choose rollback with approved receipt, never overwrite')
+        require(commit not in tags, 'commit tag already exists; verify a partial release read-only or choose approved rollback; never overwrite')
     login = cfg.az('acr', 'show', '--name', cfg.acr, '--resource-group', cfg.group)['loginServer']
     run(['az', 'acr', 'login', '--name', cfg.acr, '--subscription', cfg.subscription, '--only-show-errors'])
     target = login + '/' + PROJECT + ':' + commit
@@ -187,6 +223,16 @@ def verify_locked(cfg, digest, commit):
                 and metadata.get('changeableAttributes', {}).get('deleteEnabled') is False, 'immutable tag/manifest lock readback failed')
 
 
+def verify_published(cfg, digest, commit, expected_image_id):
+    """Verify an existing immutable image without login, push, or metadata writes."""
+    require(COMMIT_RE.fullmatch(commit) and DIGEST_RE.fullmatch(digest)
+            and DIGEST_RE.fullmatch(expected_image_id), 'invalid published image identity')
+    verify_locked(cfg, digest, commit)
+    remote = cfg.az('acr', 'manifest', 'show', '--registry', cfg.acr, '--name', PROJECT + '@' + digest)
+    require(expected_image_id in (digest, remote.get('config', {}).get('digest')),
+            'published image identity differs from expected tested image')
+
+
 def manifest(cfg, foundation, digest, commit):
     return {'name': cfg.app, 'location': os.environ.get('AZURE_LOCATION', 'eastus'),
             'type': 'Microsoft.App/containerApps',
@@ -204,9 +250,14 @@ def manifest(cfg, foundation, digest, commit):
                              'scale': {'minReplicas': 0, 'maxReplicas': 1}}}}
 
 
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def request(base, path, payload=None):
     data = json.dumps(payload).encode() if payload is not None else None
-    with urlopen(Request(base + path, data=data, headers={'Content-Type': 'application/json'}), timeout=30) as response:
+    with build_opener(NoRedirect()).open(Request(base + path, data=data, headers={'Content-Type': 'application/json'}), timeout=10) as response:
         require(response.status == 200, 'acceptance HTTP status failed')
         body = response.read()
         return body.decode() if path == '/docs' else json.loads(body)
@@ -230,13 +281,55 @@ def acceptance(base):
 
 
 def retry_acceptance(base):
-    for attempt in range(12):
+    for attempt in range(3):
         try:
             return acceptance(base)
+        except ReleaseInterrupted:
+            raise
         except Exception:
-            if attempt == 11:
+            progress('acceptance', attempt=attempt + 1, outcome='not_ready')
+            if attempt == 2:
                 raise ReleaseError('acceptance failed after bounded startup retries') from None
             time.sleep(5)
+
+
+def wait_for_app(cfg, wanted, *, timeout_seconds=1800, poll_seconds=15):
+    """Poll read-only readiness after ONE submitted write; never resubmit it."""
+    require(timeout_seconds > 0 and poll_seconds > 0, 'polling limits must be positive')
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    previous = None
+    last_report = -30
+    while time.monotonic() < deadline:
+        app = cfg.az('containerapp', 'show', '--name', cfg.app, '--resource-group', cfg.group)
+        props = app['properties']
+        state = props.get('provisioningState')
+        require(state not in ('Failed', 'Canceled', 'Deleting'), 'terminal app provisioning state; inspect partial deployment')
+        require(state in ('InProgress', 'Succeeded'), 'unknown app provisioning state; inspect partial deployment')
+        elapsed = int(time.monotonic() - started)
+        if state != previous or elapsed - last_report >= 30:
+            progress('provisioning', app_state=state, elapsed_seconds=elapsed)
+            previous, last_report = state, elapsed
+        revision_name = props.get('latestRevisionName')
+        if state == 'Succeeded' and revision_name and props.get('latestReadyRevisionName') == revision_name:
+            containers = props.get('template', {}).get('containers', [])
+            require(len(containers) == 1, 'deployed container configuration differs')
+            # An accepted update can initially return the previous ready image.
+            # Wait for the selected digest; never accept the old revision or resubmit.
+            if containers[0].get('image') == wanted:
+                revision = cfg.az('containerapp', 'revision', 'show', '--name', cfg.app,
+                                  '--resource-group', cfg.group, '--revision', revision_name)
+                rp = revision['properties']
+                require(rp.get('provisioningState') not in ('Failed', 'Deprovisioned')
+                        and rp.get('healthState') != 'Unhealthy', 'terminal revision state; inspect partial deployment')
+                if rp.get('active') is True and rp.get('provisioningState') == 'Provisioned' and rp.get('healthState') == 'Healthy':
+                    rc = rp.get('template', {}).get('containers', [])
+                    require(revision.get('name') == revision_name and len(rc) == 1 and rc[0].get('image') == wanted,
+                            'ready revision digest differs from selected image')
+                    require(time.monotonic() < deadline, 'provisioning deadline exceeded; Azure operation may continue; verify without retrying')
+                    return app
+        time.sleep(min(poll_seconds, max(0, deadline - time.monotonic())))
+    raise ReleaseError('provisioning deadline exceeded; Azure operation may continue; verify without retrying')
 
 
 def apply(cfg, foundation, digest, commit):
@@ -244,58 +337,134 @@ def apply(cfg, foundation, digest, commit):
         path = Path(directory) / 'containerapp.json'
         path.write_text(json.dumps(manifest(cfg, foundation, digest, commit)))
         cfg.az('containerapp', 'update' if foundation['existing'] else 'create', '--name', cfg.app,
-               '--resource-group', cfg.group, '--yaml', str(path))
-    app = cfg.az('containerapp', 'show', '--name', cfg.app, '--resource-group', cfg.group)
-    props = app['properties']
+               '--resource-group', cfg.group, '--yaml', str(path), '--no-wait')
     wanted = foundation['login_server'] + '/' + PROJECT + '@' + digest
-    require(props['template']['containers'][0]['image'] == wanted, 'deployed digest readback failed')
-    fqdn = props['configuration']['ingress']['fqdn']
-    require(isinstance(fqdn, str) and fqdn.endswith('.azurecontainerapps.io'), 'invalid Azure app FQDN')
+    app = wait_for_app(cfg, wanted)
+    fqdn = app['properties']['configuration']['ingress']['fqdn']
+    require(isinstance(fqdn, str) and fqdn.startswith(cfg.app + '.') and fqdn.endswith('.azurecontainerapps.io'), 'invalid Azure app FQDN')
+    progress('acceptance', outcome='starting')
     return retry_acceptance('https://' + fqdn)
 
 
 def receipt_base(cfg, operation, commit, image_id):
-    return {'schema_version': 1, 'operation': operation, 'status': 'failed', 'repository': cfg.repository,
+    return {'schema_version': 1, 'kind': 'workflow-release-receipt', 'operation': operation,
+            'status': 'in_progress', 'phase': 'preflight', 'repository': cfg.repository,
             'run_id': os.environ.get('GITHUB_RUN_ID'), 'workflow_commit': os.environ.get('GITHUB_SHA'),
             'source_run_id': os.environ.get('ROLLBACK_SOURCE_RUN_ID') if operation == 'rollback' else None,
             'commit': commit, 'image_id': image_id, 'digest': None, 'previous_digest': None,
             'resource_group': cfg.group, 'app': cfg.app, 'registry': cfg.acr, 'acceptance': None}
 
 
-def perform(cfg, operation, commit, image_id, receipt_path, digest=None):
+def perform(cfg, operation, commit, image_id, receipt_path, digest=None, *, expected_existing=None):
     receipt = receipt_base(cfg, operation, commit, image_id)
+    write_evidence(receipt_path, receipt, exclusive=True)
     try:
         foundation = preflight(cfg)
+        require(expected_existing is None or bool(foundation['existing']) == expected_existing,
+                'app presence changed since preparation; inspect without recreating or overwriting')
         require(operation != 'rollback' or foundation['existing'], 'rollback requires an existing app at update time')
         if foundation['existing']:
             receipt['previous_digest'] = foundation['existing']['properties']['template']['containers'][0]['image'].split('@')[1]
+        receipt['phase'] = 'publishing' if digest is None else 'verifying-published-image'
+        write_evidence(receipt_path, receipt)
         receipt['digest'] = digest or publish(cfg, commit, image_id)
+        receipt['phase'] = 'rollout-and-acceptance'
+        write_evidence(receipt_path, receipt)
         receipt['acceptance'] = apply(cfg, foundation, receipt['digest'], commit)
+        require(isinstance(receipt['acceptance'], dict) and all(receipt['acceptance'].get(key) is True for key in
+                ('health', 'docs', 'reconcile', 'exceptions', 'demo_mode', 'evidence', 'refusal')),
+                'release acceptance evidence is incomplete')
         receipt['status'] = 'succeeded'
-    except Exception as exc:
+        receipt['phase'] = 'accepted'
+    except BaseException as exc:
+        receipt['status'] = 'interrupted' if not isinstance(exc, Exception) or isinstance(exc, ReleaseInterrupted) else 'failed'
         receipt['error'] = str(exc) if isinstance(exc, ReleaseError) else type(exc).__name__
-        receipt['rollback_instruction'] = 'No automatic rollback. Manually dispatch rollback with a prior successful run receipt and its digest.'
+        receipt['rollback_instruction'] = 'No automatic rollback. Azure operations may continue; inspect with the read-only verifier before a separately approved recovery.'
         raise
     finally:
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+        write_evidence(receipt_path, receipt)
     return receipt
 
 
 def deploy(expected_image_id, commit, receipt_path):
+    cfg = deploy_inputs(expected_image_id, commit)
+    return perform(cfg, 'deploy', commit, expected_image_id, receipt_path)
+
+
+def deploy_inputs(expected_image_id, commit):
     cfg = gated_config('deploy')
     require(COMMIT_RE.fullmatch(commit), 'commit must be a full lowercase 40-hex SHA')
     require(DIGEST_RE.fullmatch(expected_image_id), 'expected image ID must be sha256 plus 64 hex digits')
     require(run(['git', 'rev-parse', 'HEAD']) == commit, 'commit does not match checkout HEAD')
     actual = run(['docker', 'image', 'inspect', LOCAL_IMAGE, '--format', '{{.Id}}'])
     require(actual == expected_image_id, 'loaded image ID differs from smoke-tested artifact')
-    return perform(cfg, 'deploy', commit, expected_image_id, receipt_path)
+    return cfg
+
+
+def checkpoint_context(cfg, commit, image_id):
+    run_id, attempt = os.environ.get('GITHUB_RUN_ID', ''), os.environ.get('GITHUB_RUN_ATTEMPT', '')
+    require(re.fullmatch(r'[0-9]+', run_id) and re.fullmatch(r'[0-9]+', attempt)
+            and os.environ.get('GITHUB_SHA') == commit, 'checkpoint requires the current GitHub run, attempt and commit')
+    binding = {**asdict(cfg), 'location': os.environ.get('AZURE_LOCATION', 'eastus')}
+    return {'repository': cfg.repository, 'run_id': run_id, 'run_attempt': attempt,
+            'workflow_commit': commit, 'commit': commit, 'image_id': image_id,
+            'configuration_fingerprint': hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()}
+
+
+def prepare(expected_image_id, commit, checkpoint_path):
+    """Publish once and preserve a checkpoint BEFORE any Container App write."""
+    cfg = deploy_inputs(expected_image_id, commit)
+    checkpoint = {'schema_version': 1, 'kind': 'release-checkpoint', 'status': 'in_progress',
+                  'phase': 'preflight', 'digest': None, **checkpoint_context(cfg, commit, expected_image_id)}
+    write_evidence(checkpoint_path, checkpoint, exclusive=True)
+    try:
+        foundation = preflight(cfg)
+        checkpoint['app_existed'] = bool(foundation['existing'])
+        checkpoint['phase'] = 'publishing'
+        write_evidence(checkpoint_path, checkpoint)
+        progress('publishing', outcome='starting')
+        checkpoint['digest'] = publish(cfg, commit, expected_image_id)
+        checkpoint.update(status='prepared', phase='published')
+        progress('published', outcome='locked-and-verified')
+    except BaseException as exc:
+        checkpoint['status'] = 'interrupted' if not isinstance(exc, Exception) or isinstance(exc, ReleaseInterrupted) else 'failed'
+        checkpoint['error'] = str(exc) if isinstance(exc, ReleaseError) else type(exc).__name__
+        raise
+    finally:
+        write_evidence(checkpoint_path, checkpoint)
+    return checkpoint
+
+
+def complete(expected_image_id, commit, checkpoint_path, receipt_path):
+    """Consume ONLY this run's checkpoint; no publication, unlock, or re-tag."""
+    cfg = deploy_inputs(expected_image_id, commit)
+    try:
+        checkpoint = json.loads(Path(checkpoint_path).read_text())
+    except (OSError, ValueError):
+        raise ReleaseError('prepared checkpoint cannot be read') from None
+    require(isinstance(checkpoint, dict) and checkpoint.get('schema_version') == 1
+            and checkpoint.get('kind') == 'release-checkpoint' and checkpoint.get('status') == 'prepared'
+            and checkpoint.get('phase') == 'published' and isinstance(checkpoint.get('app_existed'), bool),
+            'checkpoint is not a prepared publication')
+    for key, expected in checkpoint_context(cfg, commit, expected_image_id).items():
+        require(checkpoint.get(key) == expected, 'checkpoint provenance/configuration mismatch: ' + key)
+    digest = checkpoint.get('digest', '')
+    require(isinstance(digest, str) and DIGEST_RE.fullmatch(digest), 'checkpoint contains invalid digest')
+    verify_published(cfg, digest, commit, expected_image_id)
+    return perform(cfg, 'deploy', commit, expected_image_id, receipt_path, digest,
+                   expected_existing=checkpoint['app_existed'])
+
+
+def interrupt_release(signum, frame):
+    raise ReleaseInterrupted('release interrupted; Azure operation may continue; verify without retrying')
 
 
 def rollback(receipt_path, digest, output_path):
     cfg = gated_config('rollback')
     require(DIGEST_RE.fullmatch(digest), 'rollback digest is invalid')
     prior = json.loads(receipt_path.read_text())
+    require(prior.get('kind', 'workflow-release-receipt') == 'workflow-release-receipt',
+            'rollback requires a workflow release receipt, never operator evidence')
     require(prior.get('schema_version') == 1 and prior.get('status') == 'succeeded' and prior.get('digest') == digest,
             'rollback requires a successful approved receipt for exactly this digest')
     for key, value in {'repository': cfg.repository, 'resource_group': cfg.group, 'app': cfg.app, 'registry': cfg.acr,
@@ -323,12 +492,21 @@ def rollback(receipt_path, digest, output_path):
 
 
 def main(argv=None):
+    signal.signal(signal.SIGTERM, interrupt_release)
+    signal.signal(signal.SIGINT, interrupt_release)
     parser = argparse.ArgumentParser(description=__doc__)
     subs = parser.add_subparsers(dest='operation', required=True)
     deploy_parser = subs.add_parser('deploy')
     deploy_parser.add_argument('--expected-image-id', required=True)
     deploy_parser.add_argument('--commit', required=True)
     deploy_parser.add_argument('--receipt', type=Path, default=Path('release-receipt.json'))
+    for operation in ('prepare', 'complete'):
+        command = subs.add_parser(operation)
+        command.add_argument('--expected-image-id', required=True)
+        command.add_argument('--commit', required=True)
+        command.add_argument('--checkpoint', type=Path, default=Path('release-progress.json'))
+        if operation == 'complete':
+            command.add_argument('--receipt', type=Path, default=Path('release-receipt.json'))
     rollback_parser = subs.add_parser('rollback')
     rollback_parser.add_argument('--receipt', required=True, type=Path)
     rollback_parser.add_argument('--digest', required=True)
@@ -337,6 +515,10 @@ def main(argv=None):
     try:
         if args.operation == 'deploy':
             deploy(args.expected_image_id, args.commit, args.receipt)
+        elif args.operation == 'prepare':
+            prepare(args.expected_image_id, args.commit, args.checkpoint)
+        elif args.operation == 'complete':
+            complete(args.expected_image_id, args.commit, args.checkpoint, args.receipt)
         else:
             rollback(args.receipt, args.digest, args.output)
     except (ReleaseError, OSError, ValueError, KeyError, TypeError) as exc:

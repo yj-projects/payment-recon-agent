@@ -12,9 +12,11 @@ Container Apps environment, workspace, and diagnostic routing in East US.
 Consumption quota was verified at 0 used / 100 allowed cores; quota is capacity,
 not an allocation or charge. Milestone 3B adds the two approved identities,
 main-only GitHub federation, five scoped roles, and controlled release tooling.
-Deployment is initially disabled. OIDC policy and role configuration can be
-verified without deployment, but the first actual GitHub-to-Azure token exchange,
-image publication, and application rollout remain unexecuted.
+Deployment is disabled. Milestone 3C verified OIDC, image publication, a healthy
+app, operator acceptance, and stored logs. Its GitHub job exceeded 20 minutes and
+remains cancelled; no successful workflow receipt exists. See the
+[incident review](incidents/2026-11-21-first-release-timeout.md). Milestone 3D changes
+the release tools without redeploying that app or changing the incident outcome.
 
 Public documentation intentionally contains no personal account names, literal
 subscription/tenant/client IDs, infrastructure IPs, or live environment domains.
@@ -237,8 +239,27 @@ and deletion, then the app is deployed by registry digest. Repeated deploys of
 an existing SHA tag fail closed; use a new commit or receipt-backed rollback.
 A failure after publication can leave a retained image/tag; inspect the failed
 receipt and registry before deciding on recovery. No failed check is suppressed.
-Canceled or timed-out runs may end without a final receipt; inspect Azure and
-use the last successful receipt rather than assuming the rollout was undone.
+Canceled or timed-out runs may end without a final receipt; inspect Azure rather
+than assuming the rollout was undone. Use an earlier successful receipt only if
+one exists. For the first incident there is none; use read-only verification.
+
+The release job allows 45 minutes. Its publication step is bounded to 8 minutes;
+completion and rollback steps to 35 minutes. `prepare` checks the CI-tested image
+and publishes once, then writes `release-progress.json` (`kind=release-checkpoint`).
+The workflow retains it as `azure-checkpoint-<run-id>-<attempt>` **before** issuing
+any Container App write. If upload fails, rollout does not start. Checkpoints bind
+the run/attempt/commit, scope fingerprint, tested image, digest, and prior app
+presence; another run or altered configuration cannot reuse them.
+
+`complete` rechecks provenance, image identity, and locks without republishing,
+then submits one `--no-wait` app write. Read-only GET polling uses a 30-minute
+deadline for the expected healthy revision. A CLI read already in flight can
+finish after that deadline; the command, step, and job limits remain additional
+bounds rather than a guarantee that final upload will run. Progress prints every state change
+or 30 seconds. CLI calls have a 60-second bound (Docker push/pull: 300 seconds).
+HTTP acceptance uses at most three attempts with 10-second request timeouts and
+rejects redirects. A deadline or uncertain write outcome stops for inspection;
+the script never automatically repeats a write or repairs infrastructure.
 
 Only the release job receives `id-token: write`; CI jobs retain `contents: read`.
 The release job also has read-only Actions access for receipt provenance checks.
@@ -246,15 +267,33 @@ Deploy and rollback share a concurrency group with in-progress cancellation
 disabled. Foundation absence/configuration drift stops the release; CD never
 calls setup or silently recreates the cloud environment.
 
-After reviewing/merging the PR and approving the first cloud deployment:
+After reviewing/merging the PR, green main CI, and separately approving a future release:
 
 ```bash
-# Do not run during Milestone 3B.
+# Future authorized release only; do not rerun the cancelled incident SHA.
 gh variable set AZURE_DEPLOYMENT_ENABLED --repo "$GITHUB_REPOSITORY" --body true
 gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref main \
   -f operation=deploy -f confirmation='DEPLOY SYNTHETIC DEMO'
 gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml
-# Then: gh run watch <run-id> --repo "$GITHUB_REPOSITORY" --exit-status
+```
+
+Identify that single run at the approved commit, then watch it. Do not dispatch
+again if a metadata read fails. A watch error alone does not prove the run ended:
+
+```bash
+RELEASE_RUN_ID='<run-id-from-the-dispatch>'
+gh run watch "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --exit-status
+gh run view "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --json status,conclusion
+```
+
+Once the run is `completed`, execute this separate cleanup block whether it
+succeeded, failed, or was cancelled. If monitoring must be abandoned, restore the
+switch and report the run's last known state; disabling does not cancel an
+already-running workflow, stop Azure operations, or close public ingress:
+
+```bash
+gh variable set AZURE_DEPLOYMENT_ENABLED --repo "$GITHUB_REPOSITORY" --body false
+gh variable get AZURE_DEPLOYMENT_ENABLED --repo "$GITHUB_REPOSITORY"
 ```
 
 The first approved release creates the Container App; later releases update it.
@@ -272,7 +311,12 @@ acceptance leaves the workflow red; no automatic rollback hides the failure.
 
 The `azure-release-<run-id>` artifact contains `release-receipt.json`: source run,
 workflow/image commits, tested image ID, deployed digest, previous digest, and
-acceptance status. Receipts are retained for 30 days. Download required receipts
+acceptance status. Normal receipts have `kind=workflow-release-receipt` and are
+atomically checkpointed before side effects and between phases. Only passed
+acceptance permits `status=succeeded`. Interrupted/failed receipts and publication
+checkpoints do not authorize rollback. SIGTERM/SIGINT allow best-effort finalization;
+hard kills or runner loss can prevent final upload. Receipt artifacts cannot
+overwrite an earlier artifact. Receipts are retained for 30 days. Download required receipts
 before expiry to ignored local storage. GitHub retains source and test/evaluation
 fixtures after Azure teardown; existing ignored raw evaluation runs are not
 modified or automatically published. Recreating the registry requires a fresh
@@ -297,6 +341,39 @@ This rollback path still reruns current CI and smoke checks, plus old-image
 acceptance. Receipt expiry, a locked-tag publication failure, a missing registry,
 or insufficient access can require operator review. Never relax identity trust,
 remove locks, or recreate resources automatically to bypass an error.
+
+## Verify an existing release without publishing or deploying
+
+Use the existing authenticated local Azure/GitHub CLI sessions and the parameters
+above. No deployment enablement or emulated GitHub runner environment is needed.
+Copy the expected image ID from the trusted source run's Docker build logs.
+Choose a fresh ignored local output path; an existing evidence file is refused:
+
+```bash
+python scripts/azure_verify.py \
+  --source-run-id '<completed-manual-main-run-id>' \
+  --commit '<full-source-commit-sha>' \
+  --digest 'sha256:<locked-registry-digest>' \
+  --image-id 'sha256:<tested-docker-image-id>' \
+  --output deployment/post-incident-verification.local.json
+```
+
+The command reads source-run metadata, foundation/identity configuration, image
+locks/identity, the existing app and healthy ready revision, then performs HTTP
+acceptance. No Docker operation, login, push, app create/update, role change,
+unlock, or infrastructure setup is invoked. Missing/drifted resources cause
+failure. Public ingress must still be enabled for its HTTPS checks; it never
+enables ingress. Normalization of empty Azure fields does not relax runtime,
+secret, traffic, or image restrictions.
+
+Output is **post-incident evidence**, with `kind=post-incident-verification`,
+`status=verified`, and the source run's real conclusion (including `cancelled`).
+It omits raw account IDs/hostnames, binds scope using a hash, and never becomes a
+normal successful receipt. Preserve failed/interrupted evidence too. Do not copy
+this file into a normal receipt artifact, use it to authorize rollback, or alter
+the old workflow conclusion. A normal future release still needs all CI gates,
+explicit main-only authorization, tested-image transfer, and its own successful
+receipt. Read-only verification avoids redeploying just for evidence.
 
 ## Cloud logs
 

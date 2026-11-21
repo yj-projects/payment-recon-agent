@@ -137,7 +137,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     needs: [validate, docker-smoke]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read
@@ -218,11 +218,26 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Publish and deploy the tested image by digest
+      - name: Publish the tested image and checkpoint its identity
+        id: publish
         if: inputs.operation == 'deploy'
-        run: python scripts/azure_release.py deploy --expected-image-id "$EXPECTED_IMAGE_ID" --commit "$GITHUB_SHA"
+        timeout-minutes: 8
+        run: python scripts/azure_release.py prepare --expected-image-id "$EXPECTED_IMAGE_ID" --commit "$GITHUB_SHA"
+      - name: Preserve publication evidence before any app write
+        if: ${{ always() && inputs.operation == 'deploy' && hashFiles('release-progress.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: azure-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-progress.json
+          retention-days: 30
+          if-no-files-found: error
+      - name: Deploy the prepared digest and verify readiness
+        if: inputs.operation == 'deploy' && success() && steps.publish.outcome == 'success'
+        timeout-minutes: 35
+        run: python scripts/azure_release.py complete --expected-image-id "$EXPECTED_IMAGE_ID" --commit "$GITHUB_SHA"
       - name: Roll back to the approved tested digest
         if: inputs.operation == 'rollback'
+        timeout-minutes: 35
         run: python scripts/azure_release.py rollback --receipt prior-release/release-receipt.json --digest "$ROLLBACK_DIGEST"
       - name: Retain the release receipt
         if: ${{ always() && hashFiles('release-receipt.json') != '' }}
@@ -231,5 +246,5 @@ jobs:
           name: azure-release-${{ github.run_id }}
           path: release-receipt.json
           retention-days: 30
-          overwrite: true
+          overwrite: false
           if-no-files-found: error

@@ -73,10 +73,10 @@ Remaining work, in priority order:
   calls; publish only reviewed, verified results after approval.
 - Docker packaging and GitHub-hosted CI are verified, including the failure
   gate described below.
-- Azure foundation and OIDC identities are provisioned. An ephemeral setup,
-  explicit teardown, and manually gated CD path are implemented; application
-  deployment and image publication have not been executed. See the
-  [Azure lifecycle guide](docs/AZURE_DEPLOYMENT.md).
+- The first Azure app is deployed and passed operator acceptance/log checks.
+  Its release workflow timed out and remains cancelled, with no successful
+  workflow receipt. See the [incident review](docs/incidents/2026-11-21-first-release-timeout.md)
+  and [Azure lifecycle guide](docs/AZURE_DEPLOYMENT.md) for recovery and cleanup.
 - **P2 — optional, not completed:** Deployment with appropriate cost/access
   controls and larger, more representative evaluation datasets.
 
@@ -140,7 +140,8 @@ The same workflow also provides an explicitly enabled, manually dispatched
 main-only release path with its own job-scoped OIDC permission and the same
 required validation gates. Its tested-image transfer, release receipts,
 rollback, and disable/teardown procedures are documented in the
-[Azure lifecycle guide](docs/AZURE_DEPLOYMENT.md). No cloud release has run yet.
+[Azure lifecycle guide](docs/AZURE_DEPLOYMENT.md). The first cloud app works;
+its cancelled workflow is documented separately from later operator verification.
 
 **Known limitation:** `scripts/evaluate_agent.py --mode demo` is outside the
 mandatory CI gate. It currently exits 1 for documented case **AE-013**, with
@@ -474,8 +475,8 @@ independent edge-case fixtures, narrative-grounding evaluation, a dependency
 lock and TestClient warning cleanup. Deployment hardening would
 require authentication, rate limits, operational controls, and a fresh review.
 Docker packaging, hosted CI, and the controlled Azure deployment tooling are
-described above. Actual application rollout and release/rollback verification
-remain pending explicit approval.
+described above. A green end-to-end cloud release with a retained successful
+receipt and actual rollback execution remain unverified.
 
 Read the [release safety and repository-boundary review](docs/RELEASE_REVIEW.md)
 before publishing further changes. This baseline release contains deterministic
