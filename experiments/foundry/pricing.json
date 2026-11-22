@@ -1,0 +1,12 @@
+{
+  "verified_local_date": "2026-11-21",
+  "source": "https://azure.microsoft.com/en-us/pricing/details/azure-openai/",
+  "verification": "Official page GPT-5-mini Global row, embedded data-amount regional us-west-3 values",
+  "currency": "USD",
+  "unit": "1000000 tokens",
+  "model": "gpt-5-mini",
+  "input": 0.25,
+  "cached_input": 0.025,
+  "output": 2.0,
+  "notes": "Public list prices, not a negotiated invoice quote. Output includes billed reasoning tokens. Taxes excluded. Recheck before future runs. Execution status is recorded separately in the result artifact."
+}

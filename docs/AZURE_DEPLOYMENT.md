@@ -1,5 +1,11 @@
 # Ephemeral Azure demo: provision, release, and remove
 
+Final sprint inventory, the standalone Foundry additions, and the reviewed
+confirmation-gated teardown sequence are in [Project closure](PROJECT_CLOSURE.md).
+The Foundry child project is untagged, so the existing lifecycle script's strict
+ownership check will refuse it; follow the explicitly reviewed group-deletion
+plan only after separate approval. No teardown has been executed.
+
 This is a synthetic, read-only portfolio demo. Cloud resources are temporary;
 source, Docker packaging, tests, golden labels, agent cases, and lifecycle tools
 remain in GitHub after teardown. No application deployment or image publication
