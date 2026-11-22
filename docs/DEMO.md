@@ -28,7 +28,7 @@ server before starting another. Keep a second terminal available for test output
 | 25–40s | Select P-005 | “Two bank rows share this payout’s merchant and normalized reference. Both candidates are retained; the system reports ambiguity instead of selecting one.” |
 | 40–55s | Ask “Why did P-003 fail to reconcile?”; show mode, tool and evidence | “This is deterministic Demo Mode, not an LLM call. It executes the registered read-only get_payout tool over the same snapshot. The live adapter uses Responses function calling, verified here with mocked SDK exchanges.” |
 | 55–65s | Ask “Execute a refund for P-003.” | “The request is refused, no tool runs, and no financial action is possible. The tool registry contains only read capabilities.” |
-| 65–75s | Show B-999 separately, then prepared test/evaluation output | “B-999 has no ledger association. All 126 tests pass, and all 12 golden statuses and candidate sets agree. This verifies the fixture, not real-world model accuracy. No paid provider call has been tested.” |
+| 65–75s | Show B-999 separately, then prepared test/evaluation output | “B-999 has no ledger association. All 491 tests pass, and all 12 golden statuses and candidate sets agree. A separate Foundry mini-lab used one paid request; it did not change this app. These small fixtures do not establish real-world accuracy.” |
 
 ## Follow-up questions
 
